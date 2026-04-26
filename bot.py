@@ -385,12 +385,20 @@ async def add_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def my_listings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         db = await db_connect()
-        rows = await db.fetch("SELECT * FROM properties WHERE source='telegram' AND is_active=TRUE ORDER BY created_at DESC LIMIT 5")
-        await db.close()
-        listings = [dict(r) for r in rows]
-        if not listings:
-            await update.message.reply_text("Объявлений пока нет.\n\nНажми ➕ Подать объявление", reply_markup=main_menu())
-            return
+        row = await db.fetchrow("""
+    INSERT INTO properties
+    (deal_type, property_type, city_id, title, description,
+     rooms, area_total, price, currency, price_usd,
+     contact_phone, source, is_active)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'USD',$8,$9,'telegram',TRUE)
+    RETURNING id
+""", deal, prop_type, city_id,
+    data.get("title", "Без названия"),
+    data.get("description", ""),
+    rooms, area, price,
+    data.get("phone", "")
+)
+return str(row["id"])
         await update.message.reply_text(f"📋 {len(listings)} объявлений:", reply_markup=main_menu())
         for l in listings:
             await update.message.reply_text(listing_card(l), parse_mode="Markdown")
