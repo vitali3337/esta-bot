@@ -83,7 +83,7 @@ LOCATION_PAGES = get_location_pages()
 async def db_connect():
     return await asyncpg.connect(DATABASE_URL)
 
-async def db_save_listing(data: dict) -> str:
+
     db = await db_connect()
     try:
         city_id = CITY_MAP.get(data.get("location"), 1)
@@ -112,34 +112,38 @@ async def db_save_listing(data: dict) -> str:
     finally:
         await db.close()
 
-async def db_search_listings(location=None, deal=None, category=None, max_price=None):
+async def db_save_listing(data: dict) -> str:
     db = await db_connect()
     try:
-        conditions = ["is_active = TRUE"]
-        params = []
-        i = 1
-        if location and location in CITY_MAP:
-            conditions.append(f"city_id = ${i}")
-            params.append(CITY_MAP[location])
-            i += 1
-        if deal and deal in ("sale", "rent"):
-            conditions.append(f"deal_type = ${i}")
-            params.append(deal)
-            i += 1
-        if category and category in ("apartment", "house", "commercial", "garage", "land"):
-            conditions.append(f"property_type = ${i}")
-            params.append(category)
-            i += 1
-        if max_price:
-            conditions.append(f"price_usd <= ${i}")
-            params.append(float(max_price))
-            i += 1
-        where = " AND ".join(conditions)
-        rows = await db.fetch(
-            f"SELECT * FROM properties WHERE {where} ORDER BY is_featured DESC, created_at DESC LIMIT 5",
-            *params
+        city_id = CITY_MAP.get(data.get("location"), 1)
+        deal = data.get("deal", "sale")
+        if deal not in ("sale", "rent"):
+            deal = "sale"
+        prop_type = data.get("category", "apartment")
+        if prop_type not in ("apartment", "house", "commercial", "garage", "storage", "land"):
+            prop_type = "apartment"
+        price = float(data.get("price", 0) or 0)
+        rooms = data.get("rooms")
+        if rooms is not None:
+            rooms = int(rooms)
+        area = data.get("area")
+        if area is not None:
+            area = float(area)
+        row = await db.fetchrow("""
+            INSERT INTO properties
+            (deal_type, property_type, city_id, title, description,
+             rooms, area_total, price, currency, price_usd,
+             contact_phone, source, is_active)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'USD',$8,$9,'telegram',TRUE)
+            RETURNING id
+        """,
+            deal, prop_type, city_id,
+            data.get("title", "Без названия"),
+            data.get("description", ""),
+            rooms, area, price,
+            data.get("phone", "")
         )
-        return [dict(r) for r in rows]
+        return str(row["id"])
     finally:
         await db.close()
 
