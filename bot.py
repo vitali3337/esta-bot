@@ -259,9 +259,8 @@ async def search_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             max_price=max_price
         )
     except Exception as e:
-        logger.error(f"Search error: {e}")
-        results = []
-    await update.message.reply_text(
+        logger.error(f"Save error FULL: {type(e).__name__}: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Ошибка сохранения: {type(e).__name__}: {str(e)[:100]}", reply_markup=main_menu())
         f"✅ Найдено: *{len(results)}* объявлений" if results else "😔 Ничего не найдено.",
         parse_mode="Markdown", reply_markup=main_menu())
     for l in results:
