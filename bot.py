@@ -1,6 +1,8 @@
 import logging
 import os
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+import requests
+
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
 ApplicationBuilder,
 CommandHandler,
@@ -9,8 +11,6 @@ ContextTypes,
 filters,
 ConversationHandler,
 )
-
-import requests
 
 TOKEN = os.getenv("BOT_TOKEN")
 AIRTABLE_API_KEY = os.getenv("AIRTABLE_API_KEY")
@@ -98,7 +98,6 @@ return ROOMS
 
 async def set_rooms(update: Update, context: ContextTypes.DEFAULT_TYPE):
 context.user_data["rooms"] = update.message.text
-
 data = context.user_data
 
 text = (
@@ -111,10 +110,13 @@ text = (
     f"Подтвердить?"
 )
 
-await update.message.reply_text(text, reply_markup=ReplyKeyboardMarkup([["✅ Да", "❌ Нет"]], resize_keyboard=True))
+await update.message.reply_text(
+    text,
+    reply_markup=ReplyKeyboardMarkup([["✅ Да", "❌ Нет"]], resize_keyboard=True),
+)
 return CONFIRM
 
---- СОХРАНЕНИЕ В AIRTABLE ---
+--- СОХРАНЕНИЕ ---
 
 def save_to_airtable(data):
 url = f"https://api.airtable.com/v0/{BASE_ID}/{TABLE}"
