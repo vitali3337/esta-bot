@@ -1,134 +1,123 @@
-import os
-import aiohttp
+import logging
+import requests
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
-    Application,
+    ApplicationBuilder,
     CommandHandler,
     MessageHandler,
-    filters,
-    ConversationHandler,
     ContextTypes,
+    filters,
 )
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-API_URL = "https://propai-md.vercel.app/api/properties"
+TOKEN = "ТВОЙ_ТОКЕН"
+API_URL = "https://your-backend.up.railway.app/properties"
 
-TYPE, CATEGORY, PRICE, LOCATION, DESCRIPTION, PHOTOS = range(6)
+logging.basicConfig(level=logging.INFO)
 
-def main_menu():
+# ====== МЕНЮ ======
+def menu():
     return ReplyKeyboardMarkup(
-        [["🔍 Поиск", "➕ Добавить"], ["📂 Мои объявления"]],
-        resize_keyboard=True,
+        [
+            ["🔍 Поиск объектов", "➕ Подать объявление"],
+            ["📂 Мои объявления"]
+        ],
+        resize_keyboard=True
     )
 
+# ====== START ======
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🏡 ESTA Realty Bot\n\nВыберите действие:",
-        reply_markup=main_menu(),
+        "👋 Добро пожаловать в ESTA Realty\n\n🏠 AI-платформа недвижимости",
+        reply_markup=menu()
     )
 
+# ====== СТАРТ ДОБАВЛЕНИЯ ======
 async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await update.message.reply_text(
-        "Тип сделки:",
-        reply_markup=ReplyKeyboardMarkup(
-            [["🏠 Продажа", "🔑 Аренда"]],
-            resize_keyboard=True,
-        ),
-    )
-    return TYPE
-
-async def set_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["type"] = update.message.text
-    await update.message.reply_text(
-        "Тип недвижимости:",
-        reply_markup=ReplyKeyboardMarkup(
-            [["🏢 Квартира", "🏡 Дом", "🏗 Участок"]],
-            resize_keyboard=True,
-        ),
-    )
-    return CATEGORY
-
-async def set_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["category"] = update.message.text
-    await update.message.reply_text("💰 Введите цену:")
-    return PRICE
-
-async def set_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["price"] = update.message.text
-    await update.message.reply_text("📍 Локация:")
-    return LOCATION
-
-async def set_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["location"] = update.message.text
-    await update.message.reply_text("📝 Описание:")
-    return DESCRIPTION
-
-async def set_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["description"] = update.message.text
+    context.user_data["step"] = "type"
+    context.user_data["data"] = {}
     context.user_data["photos"] = []
-    await update.message.reply_text(
-        "📸 Отправьте фото (можно несколько).\nКогда закончите — напишите: ГОТОВО"
-    )
-    return PHOTOS
 
-async def handle_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text and update.message.text.lower() == "готово":
-        await save_property(update, context)
-        return ConversationHandler.END
+    await update.message.reply_text("Тип сделки:\nПродажа или Аренда?")
 
-    if update.message.photo:
-        file = update.message.photo[-1]
-        context.user_data["photos"].append(file.file_id)
-        await update.message.reply_text("✅ Фото добавлено")
+# ====== ОБРАБОТКА СООБЩЕНИЙ ======
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
 
-    return PHOTOS
+    if text == "➕ Подать объявление":
+        await add_start(update, context)
+        return
 
-async def save_property(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = context.user_data
+    step = context.user_data.get("step")
 
-    payload = {
-        "type": data.get("type"),
-        "category": data.get("category"),
-        "price": data.get("price"),
-        "location": data.get("location"),
-        "description": data.get("description"),
-        "photos": data.get("photos"),
-    }
+    if step == "type":
+        context.user_data["data"]["type"] = text
+        context.user_data["step"] = "category"
+        await update.message.reply_text("Тип недвижимости:")
+    
+    elif step == "category":
+        context.user_data["data"]["category"] = text
+        context.user_data["step"] = "price"
+        await update.message.reply_text("Цена:")
+    
+    elif step == "price":
+        context.user_data["data"]["price"] = text
+        context.user_data["step"] = "location"
+        await update.message.reply_text("Локация:")
+    
+    elif step == "location":
+        context.user_data["data"]["location"] = text
+        context.user_data["step"] = "description"
+        await update.message.reply_text("Описание:")
+    
+    elif step == "description":
+        context.user_data["data"]["description"] = text
+        context.user_data["step"] = "photos"
+        await update.message.reply_text("📸 Отправь фото (можно несколько), потом напиши ГОТОВО")
 
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.post(API_URL, json=payload) as resp:
-                if resp.status == 200:
-                    await update.message.reply_text(
-                        "🔥 Объявление добавлено!",
-                        reply_markup=main_menu(),
-                    )
-                else:
-                    await update.message.reply_text("❌ Ошибка API")
-        except Exception as e:
-            await update.message.reply_text(f"Ошибка: {e}")
+    elif step == "photos":
+        if text.lower() == "готово":
+            await send_to_api(update, context)
+            context.user_data.clear()
+        else:
+            await update.message.reply_text("Отправь фото или напиши ГОТОВО")
 
+# ====== ФОТО ======
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("step") != "photos":
+        return
+
+    photo = update.message.photo[-1]
+    file = await photo.get_file()
+
+    context.user_data["photos"].append(file.file_path)
+
+    await update.message.reply_text("✅ Фото добавлено")
+
+# ====== ОТПРАВКА В API ======
+async def send_to_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = context.user_data["data"]
+    data["photos"] = context.user_data["photos"]
+
+    try:
+        r = requests.post(API_URL, json=data)
+
+        if r.status_code == 200:
+            await update.message.reply_text("✅ Объявление добавлено")
+        else:
+            await update.message.reply_text(f"❌ Ошибка API: {r.text}")
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+# ====== MAIN ======
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("➕ Добавить"), add_start)],
-        states={
-            TYPE: [MessageHandler(filters.TEXT, set_type)],
-            CATEGORY: [MessageHandler(filters.TEXT, set_category)],
-            PRICE: [MessageHandler(filters.TEXT, set_price)],
-            LOCATION: [MessageHandler(filters.TEXT, set_location)],
-            DESCRIPTION: [MessageHandler(filters.TEXT, set_description)],
-            PHOTOS: [MessageHandler(filters.ALL, handle_photos)],
-        },
-        fallbacks=[],
-    )
+    app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(conv)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
-    print("🚀 BOT STARTED")
+    print("Бот запущен...")
     app.run_polling()
 
 if __name__ == "__main__":
