@@ -147,15 +147,19 @@ def menu():
 def loc_kb(page_idx):
     page = LOCATION_PAGES[page_idx]
     rows = [[loc] for loc in page]
+
     nav = []
     if page_idx > 0:
         nav.append("◀️ Пред.")
     if page_idx < len(LOCATION_PAGES) - 1:
         nav.append("▶️ След.")
+
     if nav:
         rows.append(nav)
+
     rows.append(["🌍 Все регионы"])
-    return ReplyKeyboardMarkup(rows, resize_keyboard=True, one_time_keyboard=True)
+
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
     async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     name = update.effective_user.first_name
     await update.message.reply_text(
