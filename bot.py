@@ -1,180 +1,134 @@
-import logging
 import os
-import requests
-
+import aiohttp
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder,
+    Application,
     CommandHandler,
     MessageHandler,
-    ContextTypes,
     filters,
     ConversationHandler,
+    ContextTypes,
 )
 
-TOKEN = os.getenv("BOT_TOKEN")
-AIRTABLE_API_KEY = os.getenv("AIRTABLE_API_KEY")
-BASE_ID = "appIQflEcagGQpjXQ"
-TABLE = "Listings"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+API_URL = "https://propai-md.vercel.app/api/properties"
 
-logging.basicConfig(level=logging.INFO)
+TYPE, CATEGORY, PRICE, LOCATION, DESCRIPTION, PHOTOS = range(6)
 
-# --- Состояния ---
-DEAL, PROPERTY, PRICE, CITY, ROOMS, CONFIRM = range(6)
-
-# --- Кнопки ---
 def main_menu():
     return ReplyKeyboardMarkup(
-        [
-            ["🔍 Поиск", "➕ Добавить"],
-            ["📄 Мои объявления"],
-        ],
+        [["🔍 Поиск", "➕ Добавить"], ["📂 Мои объявления"]],
         resize_keyboard=True,
     )
 
-def deal_kb():
-    return ReplyKeyboardMarkup(
-        [["🏠 Продажа", "🔑 Аренда"]],
-        resize_keyboard=True,
-    )
-
-def property_kb():
-    return ReplyKeyboardMarkup(
-        [["🏢 Квартира", "🏡 Дом"], ["🏗 Новостройка", "🏬 Коммерция"]],
-        resize_keyboard=True,
-    )
-
-# --- START ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    name = update.effective_user.first_name
-
     await update.message.reply_text(
-        f"👋 Привет, {name}!\n"
-        f"🏠 ESTA недвижимость\n\n"
-        f"Выбери действие 👇",
+        "🏡 ESTA Realty Bot\n\nВыберите действие:",
         reply_markup=main_menu(),
     )
 
-# --- ДОБАВЛЕНИЕ ---
 async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-
     await update.message.reply_text(
-        "📌 Тип сделки:",
-        reply_markup=deal_kb(),
+        "Тип сделки:",
+        reply_markup=ReplyKeyboardMarkup(
+            [["🏠 Продажа", "🔑 Аренда"]],
+            resize_keyboard=True,
+        ),
     )
-    return DEAL
+    return TYPE
 
-async def set_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["deal"] = update.message.text
-
+async def set_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["type"] = update.message.text
     await update.message.reply_text(
-        "🏠 Тип недвижимости:",
-        reply_markup=property_kb(),
+        "Тип недвижимости:",
+        reply_markup=ReplyKeyboardMarkup(
+            [["🏢 Квартира", "🏡 Дом", "🏗 Участок"]],
+            resize_keyboard=True,
+        ),
     )
-    return PROPERTY
+    return CATEGORY
 
-async def set_property(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["property"] = update.message.text
-
-    await update.message.reply_text("💰 Цена:")
+async def set_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["category"] = update.message.text
+    await update.message.reply_text("💰 Введите цену:")
     return PRICE
 
 async def set_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["price"] = update.message.text
+    await update.message.reply_text("📍 Локация:")
+    return LOCATION
 
-    await update.message.reply_text("📍 Город:")
-    return CITY
+async def set_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["location"] = update.message.text
+    await update.message.reply_text("📝 Описание:")
+    return DESCRIPTION
 
-async def set_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["city"] = update.message.text
+async def set_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["description"] = update.message.text
+    context.user_data["photos"] = []
+    await update.message.reply_text(
+        "📸 Отправьте фото (можно несколько).\nКогда закончите — напишите: ГОТОВО"
+    )
+    return PHOTOS
 
-    await update.message.reply_text("🛏 Кол-во комнат:")
-    return ROOMS
+async def handle_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text and update.message.text.lower() == "готово":
+        await save_property(update, context)
+        return ConversationHandler.END
 
-async def set_rooms(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["rooms"] = update.message.text
+    if update.message.photo:
+        file = update.message.photo[-1]
+        context.user_data["photos"].append(file.file_id)
+        await update.message.reply_text("✅ Фото добавлено")
+
+    return PHOTOS
+
+async def save_property(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = context.user_data
 
-    text = (
-        f"📋 Проверь данные:\n\n"
-        f"{data['deal']}\n"
-        f"{data['property']}\n"
-        f"💰 {data['price']}\n"
-        f"📍 {data['city']}\n"
-        f"🛏 {data['rooms']}\n\n"
-        f"Подтвердить?"
-    )
-
-    await update.message.reply_text(
-        text,
-        reply_markup=ReplyKeyboardMarkup([["✅ Да", "❌ Нет"]], resize_keyboard=True),
-    )
-    return CONFIRM
-
-# --- СОХРАНЕНИЕ ---
-def save_to_airtable(data):
-    url = f"https://api.airtable.com/v0/{BASE_ID}/{TABLE}"
-
-    headers = {
-        "Authorization": f"Bearer {AIRTABLE_API_KEY}",
-        "Content-Type": "application/json",
-    }
-
     payload = {
-        "fields": {
-            "Listing Title": f"{data['property']} {data['city']}",
-            "Price": int(data["price"]),
-            "City": data["city"],
-            "Rooms": int(data["rooms"]),
-            "Deal Type": data["deal"],
-            "Property Type": data["property"],
-        }
+        "type": data.get("type"),
+        "category": data.get("category"),
+        "price": data.get("price"),
+        "location": data.get("location"),
+        "description": data.get("description"),
+        "photos": data.get("photos"),
     }
 
-    requests.post(url, json=payload, headers=headers)
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(API_URL, json=payload) as resp:
+                if resp.status == 200:
+                    await update.message.reply_text(
+                        "🔥 Объявление добавлено!",
+                        reply_markup=main_menu(),
+                    )
+                else:
+                    await update.message.reply_text("❌ Ошибка API")
+        except Exception as e:
+            await update.message.reply_text(f"Ошибка: {e}")
 
-async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text == "✅ Да":
-        save_to_airtable(context.user_data)
-
-        await update.message.reply_text(
-            "✅ Объявление добавлено!",
-            reply_markup=main_menu(),
-        )
-    else:
-        await update.message.reply_text(
-            "❌ Отменено",
-            reply_markup=main_menu(),
-        )
-
-    return ConversationHandler.END
-
-# --- ОТМЕНА ---
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Отмена", reply_markup=main_menu())
-    return ConversationHandler.END
-
-# --- MAIN ---
 def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).build()
 
     conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("➕ Добавить"), add_start)],
         states={
-            DEAL: [MessageHandler(filters.TEXT, set_deal)],
-            PROPERTY: [MessageHandler(filters.TEXT, set_property)],
+            TYPE: [MessageHandler(filters.TEXT, set_type)],
+            CATEGORY: [MessageHandler(filters.TEXT, set_category)],
             PRICE: [MessageHandler(filters.TEXT, set_price)],
-            CITY: [MessageHandler(filters.TEXT, set_city)],
-            ROOMS: [MessageHandler(filters.TEXT, set_rooms)],
-            CONFIRM: [MessageHandler(filters.TEXT, confirm)],
+            LOCATION: [MessageHandler(filters.TEXT, set_location)],
+            DESCRIPTION: [MessageHandler(filters.TEXT, set_description)],
+            PHOTOS: [MessageHandler(filters.ALL, handle_photos)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[],
     )
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv)
 
+    print("🚀 BOT STARTED")
     app.run_polling()
 
 if __name__ == "__main__":
