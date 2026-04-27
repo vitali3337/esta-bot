@@ -1,27 +1,46 @@
-#!/usr/bin/env python3
+  #!/usr/bin/env python3
 
 import os
 import logging
+import asyncpg
 from telegram import *
 from telegram.ext import *
 
 logging.basicConfig(level=logging.INFO)
 
 TOKEN = os.environ.get("BOT_TOKEN")
+DATABASE_URL = os.environ.get("DATABASE_URL")
+MANAGER_ID = int(os.environ.get("MANAGER_ID", "5705817827"))
 
 (
     ADD_DEAL,
     ADD_TYPE,
-    ADD_LOC,
     ADD_TITLE,
-    ADD_ROOMS,
-    ADD_AREA,
     ADD_PRICE,
     ADD_DESC,
     ADD_PHONE,
-) = range(9)
+    ADD_PHOTO,
+    ADD_CONFIRM
+) = range(8)
 
-# ---------- КЛАВИАТУРЫ ----------
+# ---------- DB ----------
+
+async def db():
+    return await asyncpg.connect(DATABASE_URL)
+
+async def save(data):
+    conn = await db()
+    try:
+        await conn.execute("""
+        INSERT INTO properties (title, price, phone, deal, type, description, photos)
+        VALUES ($1,$2,$3,$4,$5,$6,$7)
+        """,
+        data["title"], data["price"], data["phone"],
+        data["deal"], data["type"], data["desc"], data["photos"])
+    finally:
+        await conn.close()
+
+# ---------- UI ----------
 
 def main_menu():
     return ReplyKeyboardMarkup([
@@ -30,7 +49,8 @@ def main_menu():
 
 def deal_kb():
     return ReplyKeyboardMarkup([
-        ["🏠 Продажа", "🔑 Аренда"],
+        ["🏠 Купля", "🏠 Продажа"],
+        ["🔑 Аренда", "🏦 Ипотека"],
         ["❌ Отмена"]
     ], resize_keyboard=True)
 
@@ -41,99 +61,82 @@ def type_kb():
         ["❌ Отмена"]
     ], resize_keyboard=True)
 
-# ---------- СТАРТ ----------
+# ---------- START ----------
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Добро пожаловать", reply_markup=main_menu())
+    await update.message.reply_text("🚀 ESTA PRO", reply_markup=main_menu())
 
 async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
     await update.message.reply_text("❌ Отменено", reply_markup=main_menu())
     return ConversationHandler.END
 
-# ---------- ФЛОУ ----------
+# ---------- FLOW ----------
 
-async def add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data.clear()
-    ctx.user_data["new"] = {}
-
+async def add_start(update: Update, ctx):
+    ctx.user_data["new"] = {"photos": []}
     await update.message.reply_text("Тип сделки:", reply_markup=deal_kb())
     return ADD_DEAL
 
-
-async def add_deal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def add_deal(update: Update, ctx):
     ctx.user_data["new"]["deal"] = update.message.text
-
     await update.message.reply_text("Тип недвижимости:", reply_markup=type_kb())
     return ADD_TYPE
 
-
-async def add_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def add_type(update: Update, ctx):
     ctx.user_data["new"]["type"] = update.message.text
-
-    await update.message.reply_text("Город:")
-    return ADD_LOC
-
-
-async def add_loc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data["new"]["location"] = update.message.text
-
-    await update.message.reply_text("Заголовок:")
+    await update.message.reply_text("Заголовок:", reply_markup=ReplyKeyboardRemove())
     return ADD_TITLE
 
-
-async def add_title(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def add_title(update: Update, ctx):
     ctx.user_data["new"]["title"] = update.message.text
-
-    await update.message.reply_text("Количество комнат:")
-    return ADD_ROOMS
-
-
-async def add_rooms(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data["new"]["rooms"] = update.message.text
-
-    await update.message.reply_text("Площадь м²:")
-    return ADD_AREA
-
-
-async def add_area(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data["new"]["area"] = update.message.text
-
-    await update.message.reply_text("Цена $:")
+    await update.message.reply_text("Цена:")
     return ADD_PRICE
 
-
-async def add_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def add_price(update: Update, ctx):
     ctx.user_data["new"]["price"] = update.message.text
-
     await update.message.reply_text("Описание:")
     return ADD_DESC
 
-
-async def add_desc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def add_desc(update: Update, ctx):
     ctx.user_data["new"]["desc"] = update.message.text
-
     await update.message.reply_text("Телефон:")
     return ADD_PHONE
 
-
-async def add_phone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def add_phone(update: Update, ctx):
     ctx.user_data["new"]["phone"] = update.message.text
+    await update.message.reply_text("Отправь фото (или напиши 'готово')")
+    return ADD_PHOTO
 
-    data = ctx.user_data["new"]
+async def add_photo(update: Update, ctx):
+    if update.message.photo:
+        file = await update.message.photo[-1].get_file()
+        ctx.user_data["new"]["photos"].append(file.file_path)
+        await update.message.reply_text("📸 Фото добавлено")
+        return ADD_PHOTO
 
-    text = (
-        f"✅ Объявление принято\n\n"
-        f"🏠 {data['title']}\n"
-        f"📍 {data['location']}\n"
-        f"💰 {data['price']}$\n"
-        f"📞 {data['phone']}"
-    )
+    if "готово" in (update.message.text or "").lower():
+        data = ctx.user_data["new"]
 
-    await update.message.reply_text(text, reply_markup=main_menu())
+        text = f"""
+📢 НОВОЕ ОБЪЯВЛЕНИЕ
 
-    ctx.user_data.clear()
-    return ConversationHandler.END
+🏠 {data['title']}
+💰 {data['price']}
+📞 {data['phone']}
+"""
+
+        # отправка менеджеру
+        await ctx.bot.send_message(MANAGER_ID, text)
+
+        # сохранение в БД
+        await save(data)
+
+        await update.message.reply_text("✅ Опубликовано", reply_markup=main_menu())
+        ctx.user_data.clear()
+        return ConversationHandler.END
+
+    return ADD_PHOTO
 
 # ---------- MAIN ----------
 
@@ -143,15 +146,13 @@ def main():
     conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("➕ Подать объявление"), add_start)],
         states={
-            ADD_DEAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_deal)],
-            ADD_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_type)],
-            ADD_LOC: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_loc)],
-            ADD_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_title)],
-            ADD_ROOMS: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_rooms)],
-            ADD_AREA: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_area)],
-            ADD_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_price)],
-            ADD_DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_desc)],
-            ADD_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_phone)],
+            ADD_DEAL: [MessageHandler(filters.TEXT, add_deal)],
+            ADD_TYPE: [MessageHandler(filters.TEXT, add_type)],
+            ADD_TITLE: [MessageHandler(filters.TEXT, add_title)],
+            ADD_PRICE: [MessageHandler(filters.TEXT, add_price)],
+            ADD_DESC: [MessageHandler(filters.TEXT, add_desc)],
+            ADD_PHONE: [MessageHandler(filters.TEXT, add_phone)],
+            ADD_PHOTO: [MessageHandler(filters.ALL, add_photo)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
@@ -159,8 +160,8 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv)
 
-    print("BOT STARTED")
+    print("PRO BOT STARTED")
     app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    main()              
