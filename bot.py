@@ -1,11 +1,11 @@
 import os
 import logging
 import requests
-from telegram import *
-from telegram.ext import *
+from telegram import ReplyKeyboardMarkup, Update
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from openai import OpenAI
 
-# ================= CONFIG =================
+# ========= CONFIG =========
 TOKEN = os.getenv("BOT_TOKEN")
 API_URL = os.getenv("API_URL")
 MANAGER_ID = int(os.getenv("MANAGER_ID", "5705817827"))
@@ -17,30 +17,44 @@ logging.basicConfig(level=logging.INFO)
 
 user_state = {}
 
-# ================= AI =================
+# ========= AI =========
 
 async def ai_funnel(text):
     try:
-        response = client.chat.completions.create(
+        res = client.chat.completions.create(
             model="gpt-5",
             messages=[
-                {"role": "system", "content": "Ты брокер. Доведи клиента до заявки."},
+                {
+                    "role": "system",
+                    "content": """
+Ты опытный риелтор.
+
+Цель:
+довести клиента до оставления телефона.
+
+Правила:
+— коротко
+— задавай вопрос
+— предлагай варианты
+— веди к действию
+"""
+                },
                 {"role": "user", "content": text}
             ]
         )
-        return response.choices[0].message.content
+        return res.choices[0].message.content
     except Exception as e:
         print("AI ERROR:", e)
         return "Напиши подробнее, что ищешь 👇"
 
-# ================= API =================
+# ========= API =========
 
 def create_property(data):
     try:
         return requests.post(f"{API_URL}/property", json=data, timeout=5).json()
     except Exception as e:
         print("CREATE ERROR:", e)
-        return {"error": True}
+        return {}
 
 def search_property():
     try:
@@ -49,47 +63,29 @@ def search_property():
         print("SEARCH ERROR:", e)
         return []
 
-def send_lead(data):
+def send_lead(phone):
     try:
-        return requests.post(f"{API_URL}/lead", json=data, timeout=5)
+        return requests.post(f"{API_URL}/lead", json={"phone": phone}, timeout=5)
     except Exception as e:
         print("LEAD ERROR:", e)
 
-# ================= UI =================
+# ========= UI =========
 
 def main_menu():
     return ReplyKeyboardMarkup([
         ["🔍 Поиск", "➕ Подать"],
-        ["💰 VIP", "📞 Контакт"]
+        ["💰 VIP"]
     ], resize_keyboard=True)
 
-# ================= START =================
+# ========= START =========
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🚀 ESTA Недвижимость\n\nВыбери действие:",
+        "🏠 ESTA Недвижимость\n\nВыбери действие:",
         reply_markup=main_menu()
     )
 
-# ================= LEAD =================
-
-async def capture_phone(update, ctx):
-    text = update.message.text
-
-    if text.startswith("+") or text.isdigit():
-        await ctx.bot.send_message(
-            MANAGER_ID,
-            f"🔥 ГОРЯЧИЙ ЛИД\nТелефон: {text}"
-        )
-
-        send_lead({"phone": text})
-
-        await update.message.reply_text("✅ Мы скоро свяжемся")
-        return True
-
-    return False
-
-# ================= HANDLE =================
+# ========= HANDLE =========
 
 async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
@@ -98,11 +94,21 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         print("USER:", text)
 
-        # ===== ЛИД =====
-        if await capture_phone(update, ctx):
-            return
+        # ===== ШАГ PHONE =====
+        if user_id in user_state and user_state[user_id].get("step") == "phone":
+            if len(text) >= 9:
+                await ctx.bot.send_message(
+                    MANAGER_ID,
+                    f"🔥 ГОРЯЧИЙ ЛИД\nТелефон: {text}"
+                )
 
-        # ===== ДОБАВЛЕНИЕ =====
+                send_lead(text)
+
+                await update.message.reply_text("✅ Мы скоро свяжемся")
+                user_state.pop(user_id)
+                return
+
+        # ===== ДОБАВИТЬ =====
         if text == "➕ Подать":
             user_state[user_id] = {"step": "title"}
             await update.message.reply_text("✏️ Введите заголовок:")
@@ -152,14 +158,16 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
 
             await update.message.reply_text(
-                "Хочешь больше вариантов или подобрать под тебя?"
+                "Хочешь — подберу лучше варианты под тебя.\nОставь номер 👇"
             )
+
+            user_state[user_id] = {"step": "phone"}
             return
 
         # ===== VIP =====
         if text == "💰 VIP":
             await update.message.reply_text(
-                "🚀 VIP = топ выдача\nНапиши: VIP"
+                "🚀 VIP = топ объявлений\nСкоро будет оплата"
             )
             return
 
@@ -171,7 +179,7 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         print("BOT ERROR:", e)
         await update.message.reply_text("⚠️ Ошибка, попробуй ещё раз")
 
-# ================= MAIN =================
+# ========= MAIN =========
 
 def main():
     app = Application.builder().token(TOKEN).build()
@@ -179,7 +187,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT, handle))
 
-    print("🔥 ESTA BOT STARTED")
+    print("🔥 BOT STARTED")
     app.run_polling()
 
 if __name__ == "__main__":
