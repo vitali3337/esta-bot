@@ -1,167 +1,188 @@
-  #!/usr/bin/env python3
-
 import os
 import logging
-import asyncpg
+import requests
 from telegram import *
 from telegram.ext import *
+from openai import OpenAI
+
+# ================= CONFIG =================
+TOKEN = os.getenv("BOT_TOKEN")
+API_URL = os.getenv("API_URL")
+MANAGER_ID = int(os.getenv("MANAGER_ID", "5705817827"))
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 logging.basicConfig(level=logging.INFO)
 
-TOKEN = os.environ.get("BOT_TOKEN")
-DATABASE_URL = os.environ.get("DATABASE_URL")
-MANAGER_ID = int(os.environ.get("MANAGER_ID", "5705817827"))
+# ================= STATE =================
+user_state = {}
 
-(
-    ADD_DEAL,
-    ADD_TYPE,
-    ADD_TITLE,
-    ADD_PRICE,
-    ADD_DESC,
-    ADD_PHONE,
-    ADD_PHOTO,
-    ADD_CONFIRM
-) = range(8)
+# ================= AI =================
 
-# ---------- DB ----------
+async def ai_funnel(text):
+    response = client.chat.completions.create(
+        model="gpt-5",
+        messages=[
+            {
+                "role": "system",
+                "content": """
+Ты AI брокер недвижимости.
 
-async def db():
-    return await asyncpg.connect(DATABASE_URL)
+Твоя цель:
+— довести клиента до заявки
 
-async def save(data):
-    conn = await db()
-    try:
-        await conn.execute("""
-        INSERT INTO properties (title, price, phone, deal, type, description, photos)
-        VALUES ($1,$2,$3,$4,$5,$6,$7)
-        """,
-        data["title"], data["price"], data["phone"],
-        data["deal"], data["type"], data["desc"], data["photos"])
-    finally:
-        await conn.close()
+Правила:
+— коротко
+— задавай вопрос
+— веди к действию
+— предлагай просмотр или варианты
+"""
+            },
+            {"role": "user", "content": text}
+        ]
+    )
 
-# ---------- UI ----------
+    return response.choices[0].message.content
+
+
+# ================= API =================
+
+def create_property(data):
+    return requests.post(f"{API_URL}/property", json=data).json()
+
+def search_property(params={}):
+    return requests.get(f"{API_URL}/properties", params=params).json()
+
+def send_lead(data):
+    return requests.post(f"{API_URL}/lead", json=data).json()
+
+
+# ================= UI =================
 
 def main_menu():
     return ReplyKeyboardMarkup([
-        ["➕ Подать объявление"]
+        ["🔍 Поиск", "➕ Подать"],
+        ["💰 VIP", "📞 Контакт"]
     ], resize_keyboard=True)
 
-def deal_kb():
-    return ReplyKeyboardMarkup([
-        ["🏠 Купля", "🏠 Продажа"],
-        ["🔑 Аренда", "🏦 Ипотека"],
-        ["❌ Отмена"]
-    ], resize_keyboard=True)
 
-def type_kb():
-    return ReplyKeyboardMarkup([
-        ["🏢 Квартира", "🏡 Дом"],
-        ["🌱 Участок", "🏪 Коммерция"],
-        ["❌ Отмена"]
-    ], resize_keyboard=True)
-
-# ---------- START ----------
+# ================= START =================
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚀 ESTA PRO", reply_markup=main_menu())
+    await update.message.reply_text(
+        "🚀 ESTA Недвижимость\n\nВыбери действие:",
+        reply_markup=main_menu()
+    )
 
-async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data.clear()
-    await update.message.reply_text("❌ Отменено", reply_markup=main_menu())
-    return ConversationHandler.END
 
-# ---------- FLOW ----------
+# ================= LEAD =================
 
-async def add_start(update: Update, ctx):
-    ctx.user_data["new"] = {"photos": []}
-    await update.message.reply_text("Тип сделки:", reply_markup=deal_kb())
-    return ADD_DEAL
+async def capture_phone(update, ctx):
+    text = update.message.text
 
-async def add_deal(update: Update, ctx):
-    ctx.user_data["new"]["deal"] = update.message.text
-    await update.message.reply_text("Тип недвижимости:", reply_markup=type_kb())
-    return ADD_TYPE
+    if text.startswith("+") or text.isdigit():
 
-async def add_type(update: Update, ctx):
-    ctx.user_data["new"]["type"] = update.message.text
-    await update.message.reply_text("Заголовок:", reply_markup=ReplyKeyboardRemove())
-    return ADD_TITLE
+        await ctx.bot.send_message(
+            MANAGER_ID,
+            f"🔥 ГОРЯЧИЙ ЛИД\nТелефон: {text}"
+        )
 
-async def add_title(update: Update, ctx):
-    ctx.user_data["new"]["title"] = update.message.text
-    await update.message.reply_text("Цена:")
-    return ADD_PRICE
+        await update.message.reply_text("✅ Спасибо! Мы скоро свяжемся")
 
-async def add_price(update: Update, ctx):
-    ctx.user_data["new"]["price"] = update.message.text
-    await update.message.reply_text("Описание:")
-    return ADD_DESC
+        return True
 
-async def add_desc(update: Update, ctx):
-    ctx.user_data["new"]["desc"] = update.message.text
-    await update.message.reply_text("Телефон:")
-    return ADD_PHONE
+    return False
 
-async def add_phone(update: Update, ctx):
-    ctx.user_data["new"]["phone"] = update.message.text
-    await update.message.reply_text("Отправь фото (или напиши 'готово')")
-    return ADD_PHOTO
 
-async def add_photo(update: Update, ctx):
-    if update.message.photo:
-        file = await update.message.photo[-1].get_file()
-        ctx.user_data["new"]["photos"].append(file.file_path)
-        await update.message.reply_text("📸 Фото добавлено")
-        return ADD_PHOTO
+# ================= HANDLE =================
 
-    if "готово" in (update.message.text or "").lower():
-        data = ctx.user_data["new"]
+async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text
 
-        text = f"""
-📢 НОВОЕ ОБЪЯВЛЕНИЕ
+    # ===== СБОР ТЕЛЕФОНА =====
+    if await capture_phone(update, ctx):
+        return
 
-🏠 {data['title']}
-💰 {data['price']}
-📞 {data['phone']}
+    # ===== ДОБАВЛЕНИЕ =====
+    if text == "➕ Подать":
+        user_state[user_id] = {"step": "title"}
+        await update.message.reply_text("✏️ Введите заголовок:")
+        return
+
+    if user_id in user_state:
+        s = user_state[user_id]
+
+        if s["step"] == "title":
+            s["title"] = text
+            s["step"] = "price"
+            await update.message.reply_text("💰 Введите цену:")
+            return
+
+        if s["step"] == "price":
+            s["price"] = text
+
+            create_property({
+                "title": s["title"],
+                "price": s["price"],
+                "deal_type": "sale"
+            })
+
+            await update.message.reply_text(
+                "✅ Объявление добавлено",
+                reply_markup=main_menu()
+            )
+
+            user_state.pop(user_id)
+            return
+
+    # ===== ПОИСК =====
+    if text == "🔍 Поиск" or "квартира" in text.lower():
+
+        data = search_property()
+
+        if not data:
+            await update.message.reply_text("❌ Ничего не найдено")
+            return
+
+        for p in data[:5]:
+            msg = f"""
+🏠 {p.get('title')}
+📍 {p.get('city','')}
+💰 ${p.get('price')}
 """
 
-        # отправка менеджеру
-        await ctx.bot.send_message(MANAGER_ID, text)
+            await update.message.reply_text(msg)
 
-        # сохранение в БД
-        await save(data)
+        await update.message.reply_text(
+            "Хочешь больше вариантов или связаться? Напиши 👇"
+        )
+        return
 
-        await update.message.reply_text("✅ Опубликовано", reply_markup=main_menu())
-        ctx.user_data.clear()
-        return ConversationHandler.END
+    # ===== VIP =====
+    if text == "💰 VIP":
+        await update.message.reply_text(
+            "🚀 Поднять объявление в топ\n\nНапиши: VIP"
+        )
+        return
 
-    return ADD_PHOTO
+    # ===== AI =====
+    reply = await ai_funnel(text)
+    await update.message.reply_text(reply)
 
-# ---------- MAIN ----------
+
+# ================= MAIN =================
 
 def main():
     app = Application.builder().token(TOKEN).build()
 
-    conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("➕ Подать объявление"), add_start)],
-        states={
-            ADD_DEAL: [MessageHandler(filters.TEXT, add_deal)],
-            ADD_TYPE: [MessageHandler(filters.TEXT, add_type)],
-            ADD_TITLE: [MessageHandler(filters.TEXT, add_title)],
-            ADD_PRICE: [MessageHandler(filters.TEXT, add_price)],
-            ADD_DESC: [MessageHandler(filters.TEXT, add_desc)],
-            ADD_PHONE: [MessageHandler(filters.TEXT, add_phone)],
-            ADD_PHOTO: [MessageHandler(filters.ALL, add_photo)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(conv)
+    app.add_handler(MessageHandler(filters.TEXT, handle))
 
-    print("PRO BOT STARTED")
+    print("🔥 ESTA BOT STARTED")
     app.run_polling()
 
+
 if __name__ == "__main__":
-    main()              
+    main()
