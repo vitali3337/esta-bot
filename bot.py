@@ -328,8 +328,8 @@ async def cb_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await conn.close()
     await q.edit_message_text("✅ Объявление удалено.")
     async def add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data.clear()
-    ctx.user_data["new"] = {"photos": []}
+        ctx.user_data.clear()
+        ctx.user_data["new"] = {"photos": []}
     await update.message.reply_text(
         "➕ *Подача объявления*\n\n📋 Шаг 1/10 — Тип сделки:",
         parse_mode="Markdown", reply_markup=deal_kb()
