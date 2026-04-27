@@ -16,72 +16,98 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 logging.basicConfig(level=logging.INFO)
 
 user_state = {}
+dialog_memory = {}
 
 # ========= AI =========
 
-async def ai_funnel(text):
+async def ai_agent(user_id, text):
     try:
-        res = client.chat.completions.create(
-            model="gpt-5",
-            messages=[
-                {
-                    "role": "system",
-                    "content": """
-Ты опытный риелтор.
+        history = dialog_memory.get(user_id, [])
 
-Цель:
-довести клиента до оставления телефона.
+        messages = [
+            {
+                "role": "system",
+                "content": """
+Ты топовый агент недвижимости.
+
+Твоя задача:
+— понять запрос
+— задать уточняющие вопросы
+— предложить варианты
+— довести до оставления номера
 
 Правила:
-— коротко
-— задавай вопрос
-— предлагай варианты
-— веди к действию
+— не пиши "напиши подробнее"
+— говори конкретно
+— всегда веди к действию
+— если мало данных: спроси город и бюджет
+— если достаточно данных: предложи варианты и дожми
+
+Стиль:
+живой, уверенный, как риелтор
 """
-                },
-                {"role": "user", "content": text}
-            ]
+            }
+        ] + history + [{"role": "user", "content": text}]
+
+        res = client.chat.completions.create(
+            model="gpt-5",
+            messages=messages
         )
-        return res.choices[0].message.content
+
+        reply = res.choices[0].message.content
+
+        # сохраняем диалог
+        dialog_memory[user_id] = history + [
+            {"role": "user", "content": text},
+            {"role": "assistant", "content": reply}
+        ]
+
+        return reply
+
     except Exception as e:
         print("AI ERROR:", e)
-        return "Напиши подробнее, что ищешь 👇"
+        return "Скажи город и бюджет, подберу варианты 👇"
+
 
 # ========= API =========
-
-def create_property(data):
-    try:
-        return requests.post(f"{API_URL}/property", json=data, timeout=5).json()
-    except Exception as e:
-        print("CREATE ERROR:", e)
-        return {}
 
 def search_property():
     try:
         return requests.get(f"{API_URL}/properties", timeout=5).json()
-    except Exception as e:
-        print("SEARCH ERROR:", e)
+    except:
         return []
+
+def ai_search(text):
+    try:
+        return requests.post(f"{API_URL}/ai-search", json={"text": text}, timeout=5).json()
+    except:
+        return []
+
+def create_property(data):
+    try:
+        return requests.post(f"{API_URL}/property", json=data, timeout=5).json()
+    except:
+        return {}
 
 def send_lead(phone):
     try:
-        return requests.post(f"{API_URL}/lead", json={"phone": phone}, timeout=5)
-    except Exception as e:
-        print("LEAD ERROR:", e)
+        requests.post(f"{API_URL}/lead", json={"phone": phone}, timeout=5)
+    except:
+        pass
 
 # ========= UI =========
 
 def main_menu():
     return ReplyKeyboardMarkup([
-        ["🔍 Поиск", "➕ Подать"],
-        ["💰 VIP"]
+        ["🔍 Купить", "🏠 Аренда"],
+        ["➕ Подать", "💰 VIP"]
     ], resize_keyboard=True)
 
 # ========= START =========
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🏠 ESTA Недвижимость\n\nВыбери действие:",
+        "🏠 ESTA Недвижимость\n\nЧто ищешь?",
         reply_markup=main_menu()
     )
 
@@ -144,35 +170,37 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 user_state.pop(user_id)
                 return
 
-        # ===== ПОИСК =====
-        if text == "🔍 Поиск" or ("квартира" in text.lower()):
-            data = search_property()
+        # ===== AI SEARCH (умный поиск по базе) =====
+        data = ai_search(text)
 
-            if not data:
-                await update.message.reply_text("❌ Ничего не найдено")
-                return
-
-            for p in data[:5]:
+        if data:
+            for p in data:
                 await update.message.reply_text(
                     f"🏠 {p.get('title')}\n📍 {p.get('city','')}\n💰 ${p.get('price')}"
                 )
 
             await update.message.reply_text(
-                "Хочешь — подберу лучше варианты под тебя.\nОставь номер 👇"
+                "Хочешь ещё варианты или подобрать под тебя? Оставь номер 👇"
             )
 
             user_state[user_id] = {"step": "phone"}
             return
 
-        # ===== VIP =====
+        # ===== КНОПКИ =====
+        if text in ["🔍 Купить", "🏠 Аренда"]:
+            await update.message.reply_text(
+                "Скажи город и бюджет 👇"
+            )
+            return
+
         if text == "💰 VIP":
             await update.message.reply_text(
-                "🚀 VIP = топ объявлений\nСкоро будет оплата"
+                "🚀 VIP размещение скоро будет доступно"
             )
             return
 
         # ===== AI =====
-        reply = await ai_funnel(text)
+        reply = await ai_agent(user_id, text)
         await update.message.reply_text(reply)
 
     except Exception as e:
@@ -187,7 +215,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT, handle))
 
-    print("🔥 BOT STARTED")
+    print("🔥 ESTA AI BOT STARTED")
     app.run_polling()
 
 if __name__ == "__main__":
