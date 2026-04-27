@@ -1,226 +1,219 @@
 import os
+import time
 import logging
 import requests
-from telegram import *
-from telegram.ext import *
-from openai import OpenAI
 
-# ================= CONFIG =================
+from telegram import (
+    ReplyKeyboardMarkup, Update,
+    InlineKeyboardButton, InlineKeyboardMarkup,
+    InputMediaPhoto
+)
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler,
+    ContextTypes, filters, CallbackQueryHandler
+)
+
+from ai_core import AICore
+
+# ========= CONFIG =========
 TOKEN = os.getenv("BOT_TOKEN")
 API_URL = os.getenv("API_URL")
-MANAGER_ID = int(os.getenv("MANAGER_ID", "5705817827"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-client = OpenAI(api_key=OPENAI_API_KEY)
+MANAGER_ID = int(os.getenv("MANAGER_ID", "5705817827"))
 
 logging.basicConfig(level=logging.INFO)
 
-# ================= STATE =================
-user_state = {}
+# ========= AI =========
+ai = AICore(API_URL, OPENAI_API_KEY)
 
-# ================= AI =================
+# ========= STATE =========
+user_state = {}  # для "Продать" и для шага "phone"
 
-async def ai_agent(user_text):
-    response = client.responses.create(
-        model="gpt-5.5",
-        reasoning={"effort": "medium"},
-        text={"verbosity": "low"},
-        input=[
-            {
-                "role": "system",
-                "content": """
-Ты топовый агент по недвижимости (Молдова/ПМР).
-
-Цель:
-— понять что хочет клиент
-— предложить варианты
-— довести до контакта
-
-Правила:
-— коротко
-— конкретно
-— задавай 1 вопрос
-— предлагай варианты
-— веди к звонку
-
-Если клиент не дал параметры:
-→ уточни (город, бюджет, тип)
-
-Если дал:
-→ предложи варианты + спроси "показать ещё или оставить заявку?"
-"""
-            },
-            {"role": "user", "content": user_text}
-        ]
-    )
-
-    return response.output_text
-
-
-# ================= API =================
-
-def search_property(params={}):
-    try:
-        return requests.get(f"{API_URL}/properties", params=params).json()
-    except:
-        return []
-
-def create_property(data):
-    try:
-        return requests.post(f"{API_URL}/property", json=data).json()
-    except:
-        return {}
-
-def send_lead(phone):
-    try:
-        requests.post(f"{API_URL}/lead", json={"phone": phone})
-    except:
-        pass
-
-
-# ================= UI =================
-
+# ========= UI =========
 def main_menu():
     return ReplyKeyboardMarkup([
-        ["🏠 Купить", "💰 Продать"],
-        ["🔑 Аренда", "🏦 Ипотека"],
+        ["🏠 Купить", "🔑 Аренда"],
+        ["➕ Продать", "🏦 Ипотека"],
         ["📞 Связаться"]
     ], resize_keyboard=True)
 
+def build_card(p: dict) -> str:
+    return f"""
+🏠 {p.get('title')}
+📍 {p.get('city', '—')} | {p.get('deal_type','—')} | {p.get('rooms','')}к
 
-# ================= START =================
+💰 ${p.get('price')} | {p.get('area','')} м²
+👁 {p.get('views', 0)} просмотров
 
+🆔 ID: #{p.get('id')}
+"""
+
+def card_buttons(p: dict):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("⭐ Сделать VIP", callback_data=f"vip_{p.get('id')}"),
+            InlineKeyboardButton("👀 Посмотреть", url=f"{API_URL}/property/{p.get('id')}")
+        ]
+    ])
+
+async def send_property(update: Update, ctx: ContextTypes.DEFAULT_TYPE, p: dict):
+    photos = p.get("photos") or []
+
+    # фото (если есть)
+    if photos:
+        media = [InputMediaPhoto(url) for url in photos[:3]]
+        await ctx.bot.send_media_group(
+            chat_id=update.effective_chat.id,
+            media=media
+        )
+
+    # карточка + кнопки
+    await update.message.reply_text(
+        build_card(p),
+        reply_markup=card_buttons(p)
+    )
+
+# ========= HELPERS =========
+def is_phone(text: str) -> bool:
+    text = text.strip()
+    return text.startswith("+") or (text.isdigit() and len(text) >= 7)
+
+def send_lead(phone: str):
+    try:
+        requests.post(f"{API_URL}/lead", json={"phone": phone}, timeout=5)
+    except Exception:
+        pass
+
+def create_property(data: dict):
+    try:
+        return requests.post(f"{API_URL}/property", json=data, timeout=5).json()
+    except Exception:
+        return {}
+
+# ========= HANDLERS =========
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🚀 ESTA Недвижимость\n\nВыбери действие:",
+        "🏠 ESTA Недвижимость\n\nЧто ищешь?",
         reply_markup=main_menu()
     )
 
+async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
 
-# ================= PHONE =================
-
-def is_phone(text):
-    return text.startswith("+") or (text.isdigit() and len(text) >= 7)
-
-
-async def capture_phone(update, ctx):
-    text = update.message.text
-
-    if is_phone(text):
-        await ctx.bot.send_message(
-            MANAGER_ID,
-            f"🔥 ГОРЯЧИЙ ЛИД\nТелефон: {text}"
-        )
-
-        send_lead(text)
-
-        await update.message.reply_text("✅ Мы скоро свяжемся")
-        return True
-
-    return False
-
-
-# ================= HANDLE =================
+    data = q.data or ""
+    if data.startswith("vip_"):
+        await q.message.reply_text("🚀 VIP подключим (пока заглушка)")
 
 async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
+    try:
+        user_id = update.effective_user.id
+        text = (update.message.text or "").strip()
 
-    # ===== PHONE =====
-    if await capture_phone(update, ctx):
-        return
-
-    # ===== ПРОДАТЬ =====
-    if text == "💰 Продать":
-        user_state[user_id] = {"step": "title"}
-        await update.message.reply_text("✏️ Введите заголовок:")
-        return
-
-    if user_id in user_state:
-        s = user_state[user_id]
-
-        if s["step"] == "title":
-            s["title"] = text
-            s["step"] = "price"
-            await update.message.reply_text("💰 Введите цену (только цифры):")
-            return
-
-        if s["step"] == "price":
-            if not text.isdigit():
-                await update.message.reply_text("⚠️ Введите цену цифрами")
+        # ===== ШАГ: ожидаем телефон =====
+        if user_state.get(user_id, {}).get("step") == "phone":
+            if is_phone(text):
+                await ctx.bot.send_message(
+                    MANAGER_ID,
+                    f"🔥 ГОРЯЧИЙ ЛИД\nТелефон: {text}"
+                )
+                send_lead(text)
+                await update.message.reply_text("✅ Спасибо! Мы скоро свяжемся.")
+                user_state.pop(user_id, None)
+                return
+            else:
+                await update.message.reply_text("📞 Введи корректный номер (например: +373XXXXXXXX)")
                 return
 
-            s["price"] = int(text)
-
-            create_property({
-                "title": s["title"],
-                "price": s["price"],
-                "deal_type": "sale"
-            })
-
-            await update.message.reply_text(
-                "✅ Объявление добавлено",
-                reply_markup=main_menu()
-            )
-
-            user_state.pop(user_id)
+        # ===== КНОПКИ =====
+        if text == "🏠 Купить":
+            await update.message.reply_text("Напиши запрос: город, тип, бюджет 👇")
             return
 
-    # ===== ПОКУПКА =====
-    if text in ["🏠 Купить", "🔑 Аренда"]:
-        await update.message.reply_text(
-            "Напиши что ищешь (например: 2к квартира Тирасполь до 50000)"
-        )
-        return
+        if text == "🔑 Аренда":
+            await update.message.reply_text("Напиши: город и бюджет для аренды 👇")
+            return
 
-    # ===== ИПОТЕКА =====
-    if text == "🏦 Ипотека":
-        await update.message.reply_text(
-            "💰 Напиши бюджет и доход — подберу ипотеку"
-        )
-        return
+        if text == "🏦 Ипотека":
+            await update.message.reply_text("💰 Напиши доход и бюджет — подберу варианты")
+            return
 
-    # ===== ПОИСК =====
-    if any(word in text.lower() for word in ["квартира", "дом", "купить", "аренда"]):
-        data = search_property()
+        if text == "📞 Связаться":
+            await update.message.reply_text("Оставь номер телефона 👇")
+            user_state[user_id] = {"step": "phone"}
+            return
 
-        if data:
-            for p in data[:3]:
-                msg = f"""
-🏠 {p.get('title')}
-📍 {p.get('city','')}
-💰 ${p.get('price')}
-"""
-                await update.message.reply_text(msg)
+        # ===== ПРОДАТЬ (форма) =====
+        if text == "➕ Продать":
+            user_state[user_id] = {"step": "title"}
+            await update.message.reply_text("✏️ Введите заголовок:")
+            return
 
-        reply = await ai_agent(text)
-        await update.message.reply_text(reply)
-        return
+        if user_id in user_state:
+            s = user_state[user_id]
 
-    # ===== AI =====
-    reply = await ai_agent(text)
-    await update.message.reply_text(reply)
+            if s.get("step") == "title":
+                s["title"] = text
+                s["step"] = "price"
+                await update.message.reply_text("💰 Введите цену (только цифры):")
+                return
 
+            if s.get("step") == "price":
+                if not text.replace(" ", "").isdigit():
+                    await update.message.reply_text("⚠️ Введите цену цифрами")
+                    return
 
-# ================= MAIN =================
+                price = int(text.replace(" ", ""))
+                create_property({
+                    "title": s["title"],
+                    "price": price,
+                    "deal_type": "sale"
+                })
 
+                await update.message.reply_text("✅ Объявление добавлено", reply_markup=main_menu())
+                user_state.pop(user_id, None)
+                return
+
+        # ===== AI-ПОДБОР (ключевая часть) =====
+        # триггер: свободный текст
+        props, reply = await ai.run(text)
+
+        if props:
+            for p in props:
+                await send_property(update, ctx, p)
+
+            # дожим к номеру
+            await update.message.reply_text(
+                f"{reply}\n\nХочешь — подберу ещё лучше. Оставь номер 👇"
+            )
+            user_state[user_id] = {"step": "phone"}
+            return
+        else:
+            # ничего не найдено — просто ответ AI
+            await update.message.reply_text(reply)
+            return
+
+    except Exception as e:
+        print("BOT ERROR:", e)
+        await update.message.reply_text("⚠️ Ошибка, попробуй ещё раз")
+
+# ========= MAIN =========
 def main():
-    import requests
-    import time
-
-    # 💥 фикс конфликта
-    requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook")
-    time.sleep(1)
+    # фикс конфликтов Telegram
+    try:
+        requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook", timeout=5)
+        time.sleep(1)
+    except Exception:
+        pass
 
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT, handle))
 
     print("🔥 ESTA AI BOT STARTED")
-
     app.run_polling(drop_pending_updates=True)
-
 
 if __name__ == "__main__":
     main()
